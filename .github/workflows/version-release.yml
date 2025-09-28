@@ -35,7 +35,7 @@ jobs:
         id: get_tag
         run: |
           branch="${{ steps.pr.outputs.base_branch }}"
-          if [ "$branch" = "main" ]; then
+          if [[ "$base_branch" = "main" || "$base_branch" = "master" ]]; then
             pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'
           elif [ "$branch" = "develop" ]; then
             pattern='^v[0-9]+\.[0-9]+\.[0-9]+-beta[0-9]+$'
