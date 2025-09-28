@@ -28,6 +28,8 @@ jobs:
               pull_number: context.payload.issue.number
             });
             core.setOutput('base_branch', pr.data.base.ref);
+            core.setOutput('head_branch', pr.data.head.ref);
+            core.setOutput('pr_title', pr.data.title);
 
       - name: Get latest tag for track
         id: get_tag
@@ -53,27 +55,43 @@ jobs:
       - name: Bump version
         id: bump
         run: |
-          branch="${{ steps.pr.outputs.base_branch }}"
+          base_branch="${{ steps.pr.outputs.base_branch }}"
+          head_branch="${{ steps.pr.outputs.head_branch }}"
+          pr_title="${{ steps.pr.outputs.pr_title }}"
           latest="${{ steps.get_tag.outputs.tag }}"
+          # Default version numbers
           if [ -z "$latest" ]; then
             major=1; minor=0; patch=0; beta=0
           else
-            if [ "$branch" = "main" ]; then
-              IFS='.' read -r major minor patch <<< "${latest#v}"
-              patch=$((patch + 1))
-              beta=0
-            elif [ "$branch" = "develop" ]; then
-              basever=$(echo "$latest" | sed -E 's/-beta[0-9]+$//')
-              betanum=$(echo "$latest" | grep -oE 'beta[0-9]+' | sed 's/beta//')
-              if [ -z "$betanum" ]; then betanum=0; fi
-              IFS='.' read -r major minor patch <<< "${basever#v}"
-              patch=$((patch))
-              beta=$((betanum + 1))
-            fi
+            basever=$(echo "$latest" | sed -E 's/-beta[0-9]+$//')
+            betanum=$(echo "$latest" | grep -oE 'beta[0-9]+' | sed 's/beta//')
+            if [ -z "$betanum" ]; then betanum=0; fi
+            IFS='.' read -r major minor patch <<< "${basever#v}"
           fi
-          if [ "$branch" = "main" ]; then
+          # Version bump logic
+          if { [[ "$base_branch" = "main" || "$base_branch" = "master" ]] && [[ "$head_branch" = "develop" ]]; }; then
+            major=$((major + 1))
+            minor=0
+            patch=0
+            beta=0
             new_tag="v${major}.${minor}.${patch}"
-          elif [ "$branch" = "develop" ]; then
+          elif [ "$base_branch" = "develop" ]; then
+            # If hotfix, patch bump, else minor bump
+            if [[ "$pr_title" =~ ^hotfix ]]; then
+              patch=$((patch + 1))
+              new_tag="v${major}.${minor}.${patch}-beta${betanum}"
+            else
+              minor=$((minor + 1))
+              patch=0
+              beta=0
+              new_tag="v${major}.${minor}.${patch}-beta${betanum}"
+            fi
+          elif { [[ "$base_branch" = "main" || "$base_branch" = "master" ]] && [[ "$pr_title" =~ ^hotfix ]]; }; then
+            patch=$((patch + 1))
+            new_tag="v${major}.${minor}.${patch}"
+          else
+            # Any other branch: beta bump
+            beta=$((betanum + 1))
             new_tag="v${major}.${minor}.${patch}-beta${beta}"
           fi
           echo "New tag: $new_tag"
