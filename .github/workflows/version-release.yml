@@ -1,0 +1,121 @@
+name: Version Release
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  release:
+    if: |
+      github.event.issue.pull_request && github.event.comment.body == 'github create-release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number
+            });
+            core.setOutput('base_branch', pr.data.base.ref);
+            core.setOutput('head_branch', pr.data.head.ref);
+            core.setOutput('pr_title', pr.data.title);
+
+      - name: Get latest tag for track
+        id: get_tag
+        run: |
+          branch="${{ steps.pr.outputs.base_branch }}"
+          if [ "$branch" = "main" ]; then
+            pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          elif [ "$branch" = "develop" ]; then
+            pattern='^v[0-9]+\.[0-9]+\.[0-9]+-beta[0-9]+$'
+          else
+            echo "Unsupported branch: $branch"
+            exit 1
+          fi
+          tags=$(git tag --list | grep -E "$pattern" | sort -V)
+          if [ -z "$tags" ]; then
+            latest_tag=""
+          else
+            latest_tag=$(echo "$tags" | tail -n1)
+          fi
+          echo "Latest tag: $latest_tag"
+          echo "tag=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Bump version
+        id: bump
+        run: |
+          base_branch="${{ steps.pr.outputs.base_branch }}"
+          head_branch="${{ steps.pr.outputs.head_branch }}"
+          pr_title="${{ steps.pr.outputs.pr_title }}"
+          latest="${{ steps.get_tag.outputs.tag }}"
+          # Default version numbers
+          if [ -z "$latest" ]; then
+            major=1; minor=0; patch=0; beta=0
+          else
+            basever=$(echo "$latest" | sed -E 's/-beta[0-9]+$//')
+            betanum=$(echo "$latest" | grep -oE 'beta[0-9]+' | sed 's/beta//')
+            if [ -z "$betanum" ]; then betanum=0; fi
+            IFS='.' read -r major minor patch <<< "${basever#v}"
+          fi
+          # Version bump logic
+          if { [[ "$base_branch" = "main" || "$base_branch" = "master" ]] && [[ "$head_branch" = "develop" ]]; }; then
+            major=$((major + 1))
+            minor=0
+            patch=0
+            beta=0
+            new_tag="v${major}.${minor}.${patch}"
+          elif [ "$base_branch" = "develop" ]; then
+            # If hotfix, patch bump, else minor bump
+            if [[ "$pr_title" =~ ^hotfix ]]; then
+              patch=$((patch + 1))
+              new_tag="v${major}.${minor}.${patch}-beta${betanum}"
+            else
+              minor=$((minor + 1))
+              patch=0
+              beta=0
+              new_tag="v${major}.${minor}.${patch}-beta${betanum}"
+            fi
+          elif { [[ "$base_branch" = "main" || "$base_branch" = "master" ]] && [[ "$pr_title" =~ ^hotfix ]]; }; then
+            patch=$((patch + 1))
+            new_tag="v${major}.${minor}.${patch}"
+          else
+            # Any other branch: beta bump
+            beta=$((betanum + 1))
+            new_tag="v${major}.${minor}.${patch}-beta${beta}"
+          fi
+          echo "New tag: $new_tag"
+          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
+
+      - name: Create source zip
+        id: zip
+        run: |
+          repo_name=$(basename $GITHUB_REPOSITORY)
+          zip_name="${repo_name}-${{ steps.bump.outputs.new_tag }}.zip"
+          zip -r "$zip_name" . \
+            -x "*.git*" \
+            -x ".github/*" \
+            -x "docs/*" \
+            -x "*.DS_Store"
+          echo "zip_name=$zip_name" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.new_tag }}
+          name: ${{github.repository}}@${{ steps.bump.outputs.new_tag }}
+          body: |
+            Automated release for ${{ steps.bump.outputs.new_tag }}
+          files: ${{ steps.zip.outputs.zip_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
